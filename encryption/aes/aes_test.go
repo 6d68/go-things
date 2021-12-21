@@ -1,41 +1,26 @@
 package aes
 
 import (
-	"bytes"
 	"github.com/stretchr/testify/assert"
-	"golang.org/x/crypto/bcrypt"
-	"io"
-	"log"
+	"io/ioutil"
+	"strings"
 	"testing"
 )
 
 var pass = "super-secret"
 var msg = "My message to encrypt/de-crypt"
 
-func TestEncryptDecryptWithWriter(t *testing.T) {
+func TestEncryptDecryptWithWriterAndReader(t *testing.T) {
 
-	key := newKeyWithPassword(pass)
-
-	w := &bytes.Buffer{}
-	encryptWriter, err := EncryptWriter(w, key)
-
-	_, err = io.WriteString(encryptWriter, msg)
-	encodedMsg := w.String()
+	var sb strings.Builder
+	w, err := EncryptWriter(&sb, pass)
+	_, err = w.Write([]byte(msg))
+	encodedMsg := sb.String()
 	assert.NoError(t, err)
 	assert.NotNil(t, encodedMsg)
 
-	decodedMsg, err := EncodeOrDecode(key, encodedMsg)
+	r, err := EncryptReader(strings.NewReader(encodedMsg), pass)
+	decrypted, err := ioutil.ReadAll(r)
 	assert.NoError(t, err)
-	assert.Equal(t, msg, string(decodedMsg))
-
-}
-
-func newKeyWithPassword(password string) []byte {
-	b, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.MinCost)
-	if err != nil {
-		log.Panic("couldn't bcrypt password")
-	}
-
-	key := b[:16]
-	return key
+	assert.Equal(t, msg, string(decrypted))
 }
