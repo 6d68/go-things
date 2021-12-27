@@ -1,125 +1,244 @@
+/*
+Example shows a basic web app with user register, login and logout capabilities.
+A Token (JWT) is stored in cookie. Users and sessions are managed in-memory.
+If the server needs a restart, the cookies must be deleted manually for everything to work
+smoothly  again.
+
+Disclaimer
+
+Code is not production ready. Many things would still have to be improved.
+Current status served only for learning purposes.
+
+*/
 package main
 
 import (
 	"fmt"
-	"github.com/golang-jwt/jwt"
-	"io"
+	"github.com/google/uuid"
+	"golang.org/x/crypto/bcrypt"
+	"log"
 	"net/http"
-	"strings"
-	"time"
+	"net/url"
 )
 
-type userClaims struct {
-	jwt.StandardClaims
-	Email string
+type userInfo struct {
+	password []byte
+	Email    string
 }
+
+var users = map[string]userInfo{}
+var sessions = map[string]string{}
 
 func main() {
+
 	http.HandleFunc("/", index)
-	http.HandleFunc("/submit", submit)
-	http.ListenAndServe(":8080", nil)
+	http.HandleFunc("/register", register)
+	http.HandleFunc("/login", login)
+	http.HandleFunc("/logout", logout)
+
+	log.Fatal(http.ListenAndServe(":8080", nil))
 }
 
-func submit(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Redirect(w, r, "/", http.StatusSeeOther)
-		return
-	}
+func index(w http.ResponseWriter, req *http.Request) {
+	var msg string
+	var displayRegisterLoginLinks string
+	var displayLogoutLink string
 
-	email := r.FormValue("email")
-	if email == "" {
-		http.Redirect(w, r, "/", http.StatusSeeOther)
-	}
-
-	jwt, err := createJwt(email)
+	c, err := req.Cookie("sessionId")
 	if err != nil {
-
-		http.Error(w, "couldn't get JWT", http.StatusInternalServerError)
-
-	}
-
-	c := http.Cookie{
-		Name:  "session",
-		Value: jwt + "|" + email,
-	}
-
-	http.SetCookie(w, &c)
-	http.Redirect(w, r, "/", http.StatusSeeOther)
-
-}
-
-func createJwt(msg string) (string, error) {
-	key := key()
-
-	claims := &userClaims{
-		StandardClaims: jwt.StandardClaims{
-			ExpiresAt: time.Now().Add(5 * time.Minute).Unix(),
-		},
-		Email: msg,
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodHS512, claims)
-
-	signedString, err := token.SignedString([]byte(key))
-	if err != nil {
-		return "", fmt.Errorf("unable to sign token")
-	}
-
-	return signedString, nil
-}
-
-func key() string {
-	key := "secret"
-	return key
-}
-
-func index(w http.ResponseWriter, r *http.Request) {
-	c, err := r.Cookie("session")
-	if err != nil {
-		c = &http.Cookie{}
-	}
-
-	message := "Not logged in"
-
-	xs := strings.SplitN(c.Value, "|", 2)
-	if len(xs) == 2 {
-		cCode := xs[0]
-		//cEmail := xs[1]
-
-		t, err := jwt.ParseWithClaims(cCode, &userClaims{}, func(token *jwt.Token) (interface{}, error) {
-
-			if token.Method.Alg() != jwt.SigningMethodHS512.Alg() {
-				return nil, fmt.Errorf("invalid signing method detected")
-			}
-			return []byte(key()), nil
-		})
-
+		displayLogoutLink = "none"
+		displayRegisterLoginLinks = "block"
+	} else {
+		t, err := parseToken(c.Value)
 		if err != nil {
-			http.Error(w, "error parsing jwt token", http.StatusInternalServerError)
+			http.Error(w, "error verifying session", http.StatusInternalServerError)
+			return
 		}
 
-		if claims, ok := t.Claims.(*userClaims); ok && t.Valid {
-			fmt.Printf("%v %v", claims.Email, claims.StandardClaims.ExpiresAt)
-			message = "Logged in"
+		email := sessions[t]
+		if user, ok := users[email]; ok {
+			msg = fmt.Sprintf("Welcome %v", user.Email)
+			displayRegisterLoginLinks = "none"
+			displayLogoutLink = "block"
 		}
 	}
 
-	html :=
-		`<!DOCTYPE html>
+	fmt.Fprintf(w, `<!DOCTYPE html>
 	<html lang="en">
 	<head>
 		<meta charset="UTF-8">
-		<title>HMAC Example</title>
+		<title>Welcome</title>
 	</head>
 	<body>
-	<p>Cookie: ` + c.Value + `</p>
-	<p>` + message + `</p>
-		<form action="/submit" method="post">
-			<input type="email" name="email"/>
-			<input type="submit"/>
-		</form>
+		<b>%s</b>
+		<div style="display: %s">
+			<h1>Register or login</h1>
+			<a href="/register">Register</a><br>
+			<a href="/login">Login</a>
+		</div>
+		<div style="display: %s">
+			<a href="/logout">Logout</a>
+		</div>
 	</body>
-	</html>`
+	</html>`, msg, displayRegisterLoginLinks, displayLogoutLink)
+}
 
-	io.WriteString(w, html)
+func login(w http.ResponseWriter, req *http.Request) {
+	if req.Method == http.MethodGet {
+		msg := req.FormValue("msg")
+		fmt.Fprintf(w, `<!DOCTYPE html>
+		<html lang="en">
+		<head>
+			<meta charset="UTF-8">
+			<title>That's a title'</title>
+		</head>
+		<body>
+			<b>%s</b>
+			<h1>Login</h1>
+			<form action="/login" method="post">
+			<div>
+				<label for="email">Email</>
+				<input type="email" name="email"/>
+			</div>
+			<div>
+				<label for="email">Password</>
+				<input type="password" name="password"/>
+			</div>
+				<input type="submit"/>
+			</form>
+		</body>
+		</html>`, msg)
+
+		return
+	}
+
+	if req.Method != http.MethodPost {
+		http.Redirect(w, req, "/", http.StatusSeeOther)
+		return
+	}
+
+	email := req.FormValue("email")
+	pass := req.FormValue("password")
+	if email == "" {
+		msg := url.QueryEscape("email must not be empty")
+		http.Redirect(w, req, "/login?msg="+msg, http.StatusSeeOther)
+	}
+
+	if pass == "" {
+		msg := url.QueryEscape("password must not be empty")
+		http.Redirect(w, req, "/login?msg="+msg, http.StatusSeeOther)
+	}
+
+	if user, exist := users[email]; exist {
+		err := bcrypt.CompareHashAndPassword(user.password, []byte(pass))
+		if err != nil {
+			http.Error(w, "error logging in", http.StatusInternalServerError)
+			return
+		}
+
+		sId := uuid.New().String()
+		sessions[sId] = email
+		token, err := createToken(sId)
+		if err != nil {
+			msg := url.QueryEscape("couldn't create token")
+			http.Redirect(w, req, "/login?msg="+msg, http.StatusSeeOther)
+			return
+		}
+
+		c := http.Cookie{
+			Name:  "sessionId",
+			Value: token,
+		}
+		http.SetCookie(w, &c)
+
+		http.Redirect(w, req, "/", http.StatusSeeOther)
+		return
+	}
+
+	msg := url.QueryEscape("username or password wrong")
+	http.Redirect(w, req, "/login?msg="+msg, http.StatusSeeOther)
+}
+
+func register(w http.ResponseWriter, req *http.Request) {
+
+	if req.Method == http.MethodGet {
+		msg := req.FormValue("msg")
+
+		fmt.Fprintf(w, `<!DOCTYPE html>
+		<html lang="en">
+		<head>
+			<meta charset="UTF-8">
+			<title>Please register</title>
+		</head>
+		<body>
+			<b>%s</b>
+			<h1>Register</h1>
+			<form action="/register" method="post">
+			<div>
+				<label for="email">Email</>
+				<input type="email" name="email"/>
+			</div>
+			<div>
+				<label for="email">Password</>
+				<input type="password" name="password"/>
+			</div>
+				<input type="submit"/>
+			</form>
+		</body>
+		</html>`, msg)
+
+		return
+	}
+
+	if req.Method != http.MethodPost {
+		http.Redirect(w, req, "/", http.StatusSeeOther)
+		return
+	}
+
+	email := req.FormValue("email")
+	pass := req.FormValue("password")
+	if email == "" {
+		msg := url.QueryEscape("email must not be empty")
+		http.Redirect(w, req, "/?msg="+msg, http.StatusSeeOther)
+	}
+
+	if pass == "" {
+		msg := url.QueryEscape("password must not be empty")
+		http.Redirect(w, req, "/?msg="+msg, http.StatusSeeOther)
+	}
+
+	h, err := bcrypt.GenerateFromPassword([]byte(pass), bcrypt.MinCost)
+	if err != nil {
+		http.Error(w, "error registering new user", http.StatusInternalServerError)
+		return
+	}
+
+	_, exists := users[email]
+	if exists {
+		msg := url.QueryEscape("email already registered")
+		http.Redirect(w, req, "/?msg="+msg, http.StatusSeeOther)
+		return
+	}
+
+	users[email] = userInfo{
+		password: h,
+		Email:    email,
+	}
+	http.Redirect(w, req, "/login", http.StatusSeeOther)
+}
+
+func logout(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		http.Redirect(w, req, "/", http.StatusSeeOther)
+		return
+	}
+
+	c, _ := req.Cookie("sessionId")
+
+	t, _ := parseToken(c.Value)
+
+	delete(sessions, t)
+
+	http.SetCookie(w, c)
+	http.Redirect(w, req, "/", http.StatusSeeOther)
 }
