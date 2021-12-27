@@ -5,6 +5,9 @@
 *.so
 *.dylib
 
+# environment files, may containing sensitive information
+.env
+
 # Test binary, built with `go test -c`
 *.test
 
